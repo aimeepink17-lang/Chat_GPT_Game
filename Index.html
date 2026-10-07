@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pixel Panic</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    min-height: 100%;
+    background: #120b2b;
+    color: #fff;
+    font-family: "Courier New", monospace;
+    overflow: hidden;
+  }
+
+  body {
+    display: grid;
+    place-items: center;
+    padding: 16px;
+  }
+
+  .wrap {
+    width: min(900px, 100%);
+    text-align: center;
+  }
+
+  h1 {
+    margin: 0 0 6px;
+    color: #ffe66d;
+    font-size: clamp(28px, 6vw, 52px);
+    letter-spacing: 5px;
+    text-shadow: 4px 4px #ff3cac;
+  }
+
+  .sub {
+    margin: 0 0 14px;
+    color: #8fffe0;
+    font-size: 14px;
+  }
+
+  .cabinet {
+    padding: 14px;
+    background: #3a1f70;
+    border: 5px solid #ff3cac;
+    box-shadow:
+      0 0 0 5px #ffe66d,
+      10px 10px 0 #090617;
+  }
+
+  canvas {
+    display: block;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    background: #080516;
+    image-rendering: pixelated;
+    border: 4px solid #8fffe0;
+    cursor: crosshair;
+  }
+
+  .hud {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 10px;
+    color: #ffe66d;
+    font-size: 16px;
+    font-weight: bold;
+  }
+
+  button {
+    margin-top: 12px;
+    padding: 10px 20px;
+    border: 0;
+    background: #ffe66d;
+    color: #170c35;
+    font: bold 16px "Courier New", monospace;
+    cursor: pointer;
+    box-shadow: 5px 5px 0 #ff3cac;
+  }
+
+  button:hover {
+    transform: translate(2px, 2px);
+    box-shadow: 3px 3px 0 #ff3cac;
+  }
+
+  .help {
+    margin-top: 12px;
+    color: #bcaee8;
+    font-size: 12px;
+  }
+</style>
+</head>
+
+<body>
+<div class="wrap">
+  <h1>PIXEL PANIC</h1>
+  <p class="sub">★ CATCH THE GOODIES. DODGE THE DOOM. ★</p>
+
+  <div class="cabinet">
+    <canvas id="game" width="800" height="450"></canvas>
+
+    <div class="hud">
+      <span>SCORE: <span id="score">0</span></span>
+      <span>LIVES: <span id="lives">3</span></span>
+      <span>LEVEL: <span id="level">1</span></span>
+    </div>
+
+    <button id="start">START GAME</button>
+  </div>
+
+  <div class="help">
+    MOVE: ← → or A / D &nbsp; • &nbsp; CATCH ★ &nbsp; • &nbsp; AVOID ☠ &nbsp; • &nbsp; SPACE: PAUSE
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+const scoreEl = document.getElementById("score");
+const livesEl = document.getElementById("lives");
+const levelEl = document.getElementById("level");
+const startBtn = document.getElementById("start");
+
+const W = canvas.width;
+const H = canvas.height;
+
+let keys = {};
+let running = false;
+let paused = false;
+let score = 0;
+let lives = 3;
+let level = 1;
+let spawnTimer = 0;
+let lastTime = 0;
+let shake = 0;
+
+const player = {
+  x: W / 2 - 35,
+  y: H - 48,
+  w: 70,
+  h: 20,
+  speed: 440
+};
+
+let objects = [];
+let particles = [];
+
+document.addEventListener("keydown", e => {
+  keys[e.key.toLowerCase()] = true;
+
+  if (["ArrowLeft", "ArrowRight", " "].includes(e.key)) {
+    e.preventDefault();
+  }
+
+  if (e.key === " " && running) {
+    paused = !paused;
+  }
+
+  if (e.key === "Enter" && !running) {
+    startGame();
+  }
+});
+
+document.addEventListener("keyup", e => {
+  keys[e.key.toLowerCase()] = false;
+});
+
+startBtn.addEventListener("click", startGame);
+
+canvas.addEventListener("pointermove", e => {
+  if (!running) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const mouseX = (e.clientX - rect.left) / rect.width * W;
+  player.x = Math.max(0, Math.min(W - player.w, mouseX - player.w / 2));
+});
+
+canvas.addEventListener("pointerdown", () => {
+  if (!running) startGame();
+});
+
+function startGame() {
+  score = 0;
+  lives = 3;
+  level = 1;
+  objects = [];
+  particles = [];
+  player.x = W / 2 - player.w / 2;
+  spawnTimer = 0;
+  running = true;
+  paused = false;
+  startBtn.textContent = "RESTART";
+  updateHUD();
+}
+
+function updateHUD() {
+  scoreEl.textContent = score;
+  livesEl.textContent = lives;
+  levelEl.textContent = level;
+}
+
+function spawnObject() {
+  const bad = Math.random() < Math.min(0.18 + level * 0.025, 0.42);
+
+  objects.push({
+    x: 25 + Math.random() * (W - 50),
+    y: -30,
+    size: bad ? 25 : 22,
+    speed: 125 + Math.random() * 70 + level * 16,
+    bad,
+    rot: Math.random() * Math.PI * 2,
+    rotSpeed: (Math.random() - 0.5) * 5
+  });
+}
+
+function addParticles(x, y, color, amount = 12) {
+  for (let i = 0; i < amount; i++) {
+    particles.push({
+      x, y,
+      vx: (Math.random() - .5) * 260,
+      vy: (Math.random() - .5) * 260,
+      life: .45 + Math.random() * .45,
+      color
+    });
+  }
+}
+
+function update(dt) {
+  if (!running || paused) return;
+
+  level = 1 + Math.floor(score / 100);
+
+  let dir = 0;
+  if (keys["arrowleft"] || keys["a"]) dir--;
+  if (keys["arrowright"] || keys["d"]) dir++;
+
+  player.x += dir * player.speed * dt;
+  player.x = Math.max(0, Math.min(W - player.w, player.x));
+
+  spawnTimer -= dt;
+  const spawnRate = Math.max(.24, .75 - level * .035);
+
+  if (spawnTimer <= 0) {
+    spawnObject();
+    spawnTimer = spawnRate;
+  }
+
+  for (let i = objects.length - 1; i >= 0; i--) {
+    const o = objects[i];
+
+    o.y += o.speed * dt;
+    o.rot += o.rotSpeed * dt;
+
+    const hit =
+      o.x + o.size > player.x &&
+      o.x - o.size < player.x + player.w &&
+      o.y + o.size > player.y &&
+      o.y - o.size < player.y + player.h;
+
+    if (hit) {
+      if (o.bad) {
+        lives--;
+        shake = .25;
+        addParticles(o.x, o.y, "#ff3cac", 20);
+
+        if (lives <= 0) {
+          running = false;
+          setTimeout(() => drawGameOver(), 50);
+        }
+      } else {
+        score += 10;
+        addParticles(o.x, o.y, "#ffe66d", 16);
+      }
+
+      objects.splice(i, 1);
+      updateHUD();
+      continue;
+    }
+
+    if (o.y > H + 40) {
+      if (!o.bad) {
+        // Missing a good item is harmless.
+      }
+      objects.splice(i, 1);
+    }
+  }
+
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vy += 350 * dt;
+    p.life -= dt;
+
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+
+  shake = Math.max(0, shake - dt);
+  updateHUD();
+}
+
+function draw() {
+  ctx.save();
+
+  if (shake > 0) {
+    ctx.translate(
+      (Math.random() - .5) * 12,
+      (Math.random() - .5) * 12
+    );
+  }
+
+  drawBackground();
+
+  for (const o of objects) drawObject(o);
+
+  drawPlayer();
+
+  for (const p of particles) {
+    ctx.globalAlpha = Math.max(0, p.life);
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x - 3, p.y - 3, 6, 6);
+  }
+
+  ctx.globalAlpha = 1;
+
+  if (!running) drawTitle();
+
+  if (paused) {
+    ctx.fillStyle = "rgba(8,5,22,.75)";
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.fillStyle = "#ffe66d";
+    ctx.font = "bold 46px Courier New";
+    ctx.textAlign = "center";
+    ctx.fillText("PAUSED", W / 2, H / 2);
+
+    ctx.font = "18px Courier New";
+    ctx.fillStyle = "#8fffe0";
+    ctx.fillText("PRESS SPACE TO RESUME", W / 2, H / 2 + 38);
+  }
+
+  ctx.restore();
+}
+
+function drawBackground() {
+  ctx.fillStyle = "#080516";
+  ctx.fillRect(0, 0, W, H);
+
+  // Stars
+  for (let i = 0; i < 70; i++) {
+    const x = (i * 137) % W;
+    const y = (i * 71) % H;
+    const blink = Math.sin(performance.now() / 500 + i) > .65;
+    ctx.fillStyle = blink ? "#ffe66d" : "#30255b";
+    ctx.fillRect(x, y, 3, 3);
+  }
+
+  // Retro horizon
+  ctx.strokeStyle = "#3a2670";
+  ctx.lineWidth = 2;
+
+  for (let y = H - 120; y < H; y += 20) {
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(W, y);
+    ctx.stroke();
+  }
+
+  for (let x = -W; x < W * 2; x += 45) {
+    ctx.beginPath();
+    ctx.moveTo(W / 2, H - 120);
+    ctx.lineTo(x, H);
+    ctx.stroke();
+  }
+
+  // Scanlines
+  ctx.fillStyle = "rgba(255,255,255,.025)";
+  for (let y = 0; y < H; y += 5) {
+    ctx.fillRect(0, y, W, 1);
+  }
+}
+
+function drawPlayer() {
+  // Shadow
+  ctx.fillStyle = "#ff3cac";
+  ctx.fillRect(player.x + 5, player.y + 6, player.w, player.h);
+
+  ctx.fillStyle = "#8fffe0";
+  ctx.fillRect(player.x, player.y, player.w, player.h);
+
+  ctx.fillStyle = "#2c1b62";
+  ctx.fillRect(player.x + 8, player.y + 5, player.w - 16, 8);
+
+  // Little antenna
+  ctx.fillStyle = "#ffe66d";
+  ctx.fillRect(player.x + player.w / 2 - 2, player.y - 8, 4, 8);
+  ctx.fillRect(player.x + player.w / 2 - 7, player.y - 12, 14, 4);
+}
+
+function drawObject(o) {
+  ctx.save();
+  ctx.translate(o.x, o.y);
+  ctx.rotate(o.rot);
+
+  if (o.bad) {
+    ctx.fillStyle = "#ff3cac";
+    ctx.font = `${o.size * 2}px Arial`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("☠", 0, 0);
+  } else {
+    ctx.fillStyle = "#ffe66d";
+    ctx.font = `${o.size * 2}px Arial`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("★", 0, 0);
+  }
+
+  ctx.restore();
+}
+
+function drawTitle() {
+  ctx.fillStyle = "rgba(8,5,22,.65)";
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = "center";
+
+  ctx.fillStyle = "#ffe66d";
+  ctx.font = "bold 48px Courier New";
+
+  if (score === 0 && lives === 3) {
+    ctx.fillText("READY?", W / 2, H / 2 - 15);
+
+    ctx.font = "18px Courier New";
+    ctx.fillStyle = "#8fffe0";
+    ctx.fillText("PRESS START OR ENTER", W / 2, H / 2 + 28);
+  }
+}
+
+function drawGameOver() {
+  ctx.fillStyle = "rgba(8,5,22,.82)";
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = "center";
+
+  ctx.fillStyle = "#ff3cac";
+  ctx.font = "bold 48px Courier New";
+  ctx.fillText("GAME OVER", W / 2, H / 2 - 30);
+
+  ctx.fillStyle = "#ffe66d";
+  ctx.font = "22px Courier New";
+  ctx.fillText(`SCORE: ${score}`, W / 2, H / 2 + 12);
+
+  ctx.fillStyle = "#8fffe0";
+  ctx.font = "16px Courier New";
+  ctx.fillText("PRESS ENTER OR START", W / 2, H / 2 + 48);
+}
+
+function loop(timestamp) {
+  const dt = Math.min((timestamp - lastTime) / 1000 || 0, .033);
+  lastTime = timestamp;
+
+  update(dt);
+  draw();
+
+  requestAnimationFrame(loop);
+}
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
